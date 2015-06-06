@@ -50,7 +50,7 @@
     <!-- Overlay to enable NFC developer option notification-->
     <bool name="enable_developer_option_notification">true</bool>
     <!-- Whether to enable NFC by default on boot or not. -->
-    <bool name="enable_nfc_default">true</bool>
+    <bool name="enable_nfc_default">false</bool>
     <!-- Reader mode should be ON or OFF if reader_option_capable is enabled -->
     <bool name="reader_option_default">true</bool>
     <!-- Secure NFC default value-->
