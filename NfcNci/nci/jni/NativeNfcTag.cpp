@@ -1813,7 +1813,7 @@ void nativeNfcTag_releaseRfInterfaceMutexLock() {
 ** JNI functions for Android 4.0.3
 **
 *****************************************************************************/
-static JNINativeMethod gMethods[] = {
+static const JNINativeMethod gMethods[] = {
     {"doConnect", "(IZ)I", (void*)nativeNfcTag_doConnect},
     {"doDisconnect", "()Z", (void*)nativeNfcTag_doDisconnect},
     {"doReconnect", "()I", (void*)nativeNfcTag_doReconnect},

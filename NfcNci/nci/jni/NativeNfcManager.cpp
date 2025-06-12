@@ -2892,7 +2892,7 @@ static void nfcManager_setNciConfig(JNIEnv* e, jobject o, jint param_id,
 ** JNI functions for android-4.0.1_r1
 **
 *****************************************************************************/
-static JNINativeMethod gMethods[] = {
+static const JNINativeMethod gMethods[] = {
     {"doDownload", "()Z", (void*)nfcManager_doDownload},
 
     {"initializeNativeStructure", "()Z", (void*)nfcManager_initNativeStruc},
