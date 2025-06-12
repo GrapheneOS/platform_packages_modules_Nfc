@@ -164,7 +164,7 @@ jboolean t4tNfceeManager_isNdefNfceefeatureEnabled(JNIEnv* e, jobject o) {
  ** Description:     JNI functions
  **
  *****************************************************************************/
-static JNINativeMethod gMethods[] = {
+static const JNINativeMethod gMethods[] = {
     {"doWriteData", "([B[B)I", (void*)t4tNfceeManager_doWriteData},
     {"doReadData", "([B)[B", (void*)t4tNfceeManager_doReadData},
     {"doClearNdefData", "()Z", (void*)t4tNfceeManager_doClearNdefData},
