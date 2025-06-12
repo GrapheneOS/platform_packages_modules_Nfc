@@ -2787,7 +2787,7 @@ static void sendRawVsCmdCallback(uint8_t event, uint16_t param_len,
 ** JNI functions for android-4.0.1_r1
 **
 *****************************************************************************/
-static JNINativeMethod gMethods[] = {
+static const JNINativeMethod gMethods[] = {
     {"doDownload", "()Z", (void*)nfcManager_doDownload},
 
     {"initializeNativeStructure", "()Z", (void*)nfcManager_initNativeStruc},
