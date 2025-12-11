@@ -1711,6 +1711,29 @@ public class HostEmulationManager {
                                     .build())
                             .build());
         }
+
+        @Override
+        public void onNullBinding(ComponentName name) {
+            Log.i(TAG, "onNullBinding: " + name);
+            synchronized (mLock) {
+                mContext.unbindService(this);
+            }
+
+            NfcInjector.getInstance().getNfcEventLog().logEvent(
+                    NfcEventProto.EventType.newBuilder()
+                            .setPaymentServiceBindState(
+                                NfcEventProto.NfcPaymentServiceBindState.newBuilder()
+                                    .setBindState(NfcEventProto.BindState.SERVICE_NULL_BINDING)
+                                    .setComponentInfo(
+                                        NfcEventProto.NfcComponentInfo.newBuilder()
+                                            .setPackageName(
+                                                name.getPackageName())
+                                            .setClassName(
+                                                name.getClassName())
+                                            .build())
+                                    .build())
+                            .build());
+        }
     };
 
     class HostEmulationServiceConnection implements ServiceConnection {
@@ -1799,6 +1822,20 @@ public class HostEmulationManager {
                     mServiceName = null;
                     mServiceBound = false;
                 }
+            }
+        }
+
+        @Override
+        public void onBindingDied(ComponentName name) {
+            Log.i(TAG, "onBindingDied: " + name);
+            unbindServiceIfNeededLocked();
+        }
+
+        @Override
+        public void onNullBinding(ComponentName name) {
+            Log.i(TAG, "onNullBinding: " + name);
+            synchronized (mLock) {
+                mContext.unbindService(this);
             }
         }
     };
