@@ -1752,6 +1752,13 @@ public class HostEmulationManager {
                                 preferredUserAndService.getComponentName();
                 /* Service is already deactivated and not preferred, don't bind */
                 if (mState.get() == STATE_IDLE && !name.equals(preferredServiceName)) {
+                    try {
+                        mContext.unbindService(this);
+                    } catch (IllegalArgumentException e) {
+                        Log.w(TAG, "Failed to unbind " + name, e);
+                    }
+                    mComponentNameToConnectionsMap.remove(
+                            new ComponentNameAndUser(mUserId, name));
                     return;
                 }
                 Messenger messenger = new Messenger(service);
