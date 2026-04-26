@@ -54,7 +54,7 @@
     <!-- Reader mode should be ON or OFF if reader_option_capable is enabled -->
     <bool name="reader_option_default">true</bool>
     <!-- Secure NFC default value-->
-    <bool name="secure_nfc_default">false</bool>
+    <bool name="secure_nfc_default">true</bool>
     <!-- Block list that contains the package names which are not desired to get tag intents -->
     <string-array name="tag_intent_blocked_app_list" translatable="false">
       <item>com.google.android.tag</item>
