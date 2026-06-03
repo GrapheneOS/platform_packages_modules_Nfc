@@ -315,14 +315,18 @@ void nfa_t4tnfcee_store_rx_buf(NFC_HDR* p_data) {
                                __func__, p_data->len,
                                nfa_t4tnfcee_cb.rd_offset);
     p = (uint8_t*)(p_data + 1) + p_data->offset;
-    if (((uint32_t)nfa_t4tnfcee_cb.rd_offset + p_data->len) <=
-        nfa_t4tnfcee_cb.p_dataBuf_len) {
-      memcpy(&nfa_t4tnfcee_cb.p_dataBuf[nfa_t4tnfcee_cb.rd_offset], p,
-             p_data->len);
-      nfa_t4tnfcee_cb.rd_offset += p_data->len;
-    } else {
+    uint32_t avail = nfa_t4tnfcee_cb.p_dataBuf_len - nfa_t4tnfcee_cb.rd_offset;
+    uint32_t n = (p_data->len > avail) ? avail : p_data->len;
+
+    if (n > 0) {
+      memcpy(&nfa_t4tnfcee_cb.p_dataBuf[nfa_t4tnfcee_cb.rd_offset], p, n);
+      nfa_t4tnfcee_cb.rd_offset += n;
+    }
+
+    if (p_data->len > avail) {
       LOG(ERROR) << StringPrintf("%s: Exceed p_dataBuf_len error", __func__);
       nfa_t4tnfcee_cb.status = NFA_STATUS_FAILED;
+      android_errorWriteLog(0x534e4554, "503545851");
       android_errorWriteLog(0x534e4554, "508390497");
     }
   } else {
@@ -489,7 +493,9 @@ void nfa_t4tnfcee_handle_file_operations(tRW_DATA* p_rwData) {
       nfa_t4tnfcee_store_rx_buf(p_rwData->raw_frame.p_data);
       if (RW_T4tIsReadComplete()) {
         nfa_t4tnfcee_cb.dataLen = nfa_t4tnfcee_cb.rd_offset;
-        nfa_t4tnfcee_cb.status = p_rwData->raw_frame.status;
+        if (nfa_t4tnfcee_cb.status == NFA_STATUS_OK) {
+          nfa_t4tnfcee_cb.status = p_rwData->raw_frame.status;
+        }
         nfa_t4tnfcee_notify_rx_evt();
       } else {
         RW_T4tNfceeReadPendingData();
