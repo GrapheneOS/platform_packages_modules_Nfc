@@ -254,6 +254,13 @@ static void rw_ci_data_cback(__attribute__((unused)) uint8_t conn_id,
       break;
 
     case RW_CI_STATE_ATTRIB:
+      if (p_r_apdu->len < sizeof(p_ci->attrib_res)) {
+        LOG(ERROR) << StringPrintf("%s: Invalid attrib response length",
+                                   __func__);
+        GKI_freebuf(p_r_apdu);
+        rw_ci_handle_error(NFC_STATUS_BAD_RESP, 0, 0);
+        break;
+      }
       memcpy(p_ci->attrib_res, p, sizeof(p_ci->attrib_res));
       GKI_freebuf(p_r_apdu);
       rw_ci_send_uid();
@@ -262,6 +269,12 @@ static void rw_ci_data_cback(__attribute__((unused)) uint8_t conn_id,
     case RW_CI_STATE_UID: {
       uint16_t status_words;
 
+      if (p_r_apdu->len < 1 + T4T_RSP_STATUS_WORDS_SIZE) {
+        LOG(ERROR) << StringPrintf("%s: Invalid uid response length", __func__);
+        GKI_freebuf(p_r_apdu);
+        rw_ci_handle_error(NFC_STATUS_BAD_RESP, 0, 0);
+        break;
+      }
       p_r_apdu->len -= 1;  // Last byte is status
       p_sw = (uint8_t*)(p_r_apdu + 1) + p_r_apdu->offset;
       p_sw += (p_r_apdu->len - T4T_RSP_STATUS_WORDS_SIZE);
