@@ -561,11 +561,19 @@ public class RegisteredAidCache {
                         + mDefaultWalletHolderPackageName);
             }
             // If the role holder has multiple services with the same AID type, then we select
-            // the first one. The services are sorted alphabetically based on their component
-            // names.
-            defaultWalletServices.sort((o1, o2) ->
-                    String.CASE_INSENSITIVE_ORDER.compare(o1.getComponent().toShortString(),
-                            o2.getComponent().toShortString()));
+            // the first one. The services are sorted to prioritize the default wallet holder's
+            // own services over associated services, and then alphabetically based on their
+            // component names.
+            defaultWalletServices.sort((o1, o2) -> {
+                boolean o1IsWallet = o1.getComponent().getPackageName()
+                        .equals(mDefaultWalletHolderPackageName);
+                boolean o2IsWallet = o2.getComponent().getPackageName()
+                        .equals(mDefaultWalletHolderPackageName);
+                if (o1IsWallet && !o2IsWallet) return -1;
+                if (!o1IsWallet && o2IsWallet) return 1;
+                return String.CASE_INSENSITIVE_ORDER.compare(o1.getComponent().toShortString(),
+                        o2.getComponent().toShortString());
+            });
             resolveInfo.defaultService = defaultWalletServices.get(0);
         } else if (matchedPayment != null) {
             // 3d priority: if there is a preferred payment service,
@@ -675,12 +683,22 @@ public class RegisteredAidCache {
              return resolveinfo;
         } else if (mWalletRoleObserver.isWalletRoleFeatureEnabled()) {
             if (!aidDefaultInfo.walletDefaults.isEmpty()) {
-                // Check if any of the conflicting services is foreground default
-                if (conflictingDefaultInfo.foregroundDefault != null) {
-                    // Conflicting AID registration is in foreground, trumps prefix tap&pay default
+                boolean conflictingHasWallet = false;
+                for (ServiceAidInfo sai : conflictingDefaultInfo.walletDefaults) {
+                    if (sai.service.getComponent().getPackageName()
+                            .equals(mDefaultWalletHolderPackageName) && isExact(sai.aid)) {
+                        conflictingHasWallet = true;
+                        break;
+                    }
+                }
+                // Check if any of the conflicting services is foreground default or wallet holder
+                if (conflictingDefaultInfo.foregroundDefault != null || conflictingHasWallet) {
+                    // Conflicting AID registration is in foreground or wallet itself,
+                    // trumps prefix tap&pay default
                     if (VDBG) {
                         Log.d(TAG, "resolveAidConflictLocked: One of the conflicting AID "
-                                + "registrations is foreground preferred, ignoring prefix");
+                                + "registrations is foreground preferred or wallet holder, "
+                                + "ignoring prefix");
                     }
                     return EMPTY_RESOLVE_INFO;
                 } else {

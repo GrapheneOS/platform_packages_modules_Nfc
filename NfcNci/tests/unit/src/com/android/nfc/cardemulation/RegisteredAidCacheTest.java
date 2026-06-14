@@ -1758,4 +1758,174 @@ public class RegisteredAidCacheTest {
         // Assert: The result is null and no NullPointerException was thrown.
         assertNull(result);
     }
+
+    @Test
+    public void
+            testAidConflictResolution_associatedRolePrefixAidDoesNotShadowWalletExactAid()
+            throws PackageManager.NameNotFoundException {
+        setWalletRoleFlag(true);
+        supportPrefixAndSubset(true);
+        when(Flags.nfcAssociatedRoleServices()).thenReturn(true);
+        when(mPackageManager.getProperty(
+                eq(CardEmulation.PROPERTY_ALLOW_SHARED_ROLE_PRIORITY),
+                eq(WALLET_HOLDER_PACKAGE_NAME)))
+                .thenReturn(new PackageManager.Property(
+                        CardEmulation.PROPERTY_ALLOW_SHARED_ROLE_PRIORITY,
+                        WALLET_HOLDER_2_PACKAGE_NAME, WALLET_HOLDER_PACKAGE_NAME, null));
+
+        mRegisteredAidCache = new RegisteredAidCache(mContext, mWalletRoleObserver,
+                mAidRoutingManager);
+        mRegisteredAidCache.mNfcEnabled = true;
+
+        List<ApduServiceInfo> apduServiceInfos = new ArrayList<>();
+        // Default wallet service with exact payment AID
+        apduServiceInfos.add(createServiceInfoForAidRouting(
+                WALLET_PAYMENT_SERVICE,
+                true,
+                List.of(PAYMENT_AID_1),
+                List.of(CardEmulation.CATEGORY_PAYMENT),
+                false,
+                true,
+                USER_ID,
+                true,
+                true));
+        // Associated role service with prefix AID and wantsRoleHolderPriority=true
+        apduServiceInfos.add(createServiceInfoForAidRouting(
+                PAYMENT_SERVICE,
+                true,
+                List.of(PREFIX_PAYMENT_AID),
+                List.of(CardEmulation.CATEGORY_OTHER),
+                false,
+                true,
+                USER_ID,
+                true,
+                true));
+
+        mRegisteredAidCache.generateUserApduServiceInfoLocked(USER_ID, apduServiceInfos);
+        mRegisteredAidCache.generateServiceMapLocked(apduServiceInfos);
+        mRegisteredAidCache.onWalletRoleHolderChanged(WALLET_HOLDER_PACKAGE_NAME, USER_ID);
+
+        mRegisteredAidCache.mAssociatedRoleServices = new HashSet<>();
+        mRegisteredAidCache.mAssociatedRoleServices.add(apduServiceInfos.get(1));
+        mRegisteredAidCache.generateAidCacheLocked();
+
+        RegisteredAidCache.AidResolveInfo paymentResolveInfo =
+                mRegisteredAidCache.resolveAid(PAYMENT_AID_1);
+
+        assertNotNull(paymentResolveInfo.defaultService);
+        assertEquals(WALLET_PAYMENT_SERVICE, paymentResolveInfo.defaultService.getComponent());
+    }
+
+    @Test
+    public void testAidConflictResolution_walletHolderPrioritizedOverAssociatedService()
+            throws PackageManager.NameNotFoundException {
+        setWalletRoleFlag(true);
+        supportPrefixAndSubset(false);
+        when(Flags.nfcAssociatedRoleServices()).thenReturn(true);
+        when(mPackageManager.getProperty(
+                eq(CardEmulation.PROPERTY_ALLOW_SHARED_ROLE_PRIORITY),
+                eq(WALLET_HOLDER_PACKAGE_NAME)))
+                .thenReturn(new PackageManager.Property(
+                        CardEmulation.PROPERTY_ALLOW_SHARED_ROLE_PRIORITY,
+                        WALLET_HOLDER_2_PACKAGE_NAME, WALLET_HOLDER_PACKAGE_NAME, null));
+
+        mRegisteredAidCache = new RegisteredAidCache(mContext, mWalletRoleObserver,
+                mAidRoutingManager);
+        mRegisteredAidCache.mNfcEnabled = true;
+
+        ComponentName associatedServiceWithAlphabeticallyEarlierName = new ComponentName(
+                WALLET_HOLDER_2_PACKAGE_NAME,
+                "com.android.test.walletroleholder2.AAAApduService");
+
+        ApduServiceInfo walletServiceInfo = createServiceInfoForAidRouting(
+                WALLET_PAYMENT_SERVICE,
+                true,
+                List.of(PAYMENT_AID_1),
+                List.of(CardEmulation.CATEGORY_PAYMENT),
+                false,
+                true,
+                USER_ID,
+                true,
+                true);
+        ApduServiceInfo associatedServiceInfo = createServiceInfoForAidRouting(
+                associatedServiceWithAlphabeticallyEarlierName,
+                true,
+                List.of(PAYMENT_AID_1),
+                List.of(CardEmulation.CATEGORY_PAYMENT),
+                false,
+                true,
+                USER_ID,
+                true,
+                true);
+
+        List<ApduServiceInfo> apduServiceInfos = List.of(walletServiceInfo, associatedServiceInfo);
+
+        mRegisteredAidCache.generateUserApduServiceInfoLocked(USER_ID, apduServiceInfos);
+        mRegisteredAidCache.generateServiceMapLocked(apduServiceInfos);
+        mRegisteredAidCache.onWalletRoleHolderChanged(WALLET_HOLDER_PACKAGE_NAME, USER_ID);
+
+        mRegisteredAidCache.mAssociatedRoleServices = new HashSet<>();
+        mRegisteredAidCache.mAssociatedRoleServices.add(associatedServiceInfo);
+        mRegisteredAidCache.generateAidCacheLocked();
+
+        RegisteredAidCache.AidResolveInfo paymentResolveInfo =
+                mRegisteredAidCache.resolveAid(PAYMENT_AID_1);
+
+        assertNotNull(paymentResolveInfo.defaultService);
+        assertEquals(WALLET_PAYMENT_SERVICE, paymentResolveInfo.defaultService.getComponent());
+    }
+
+    @Test
+    public void testAidConflictResolution_walletRolePrefixChildAidDoesNotShadowWalletPrefixRootAid()
+            throws PackageManager.NameNotFoundException {
+        setWalletRoleFlag(true);
+        supportPrefixAndSubset(true);
+        when(Flags.nfcAssociatedRoleServices()).thenReturn(true);
+        when(mPackageManager.getProperty(
+                eq(CardEmulation.PROPERTY_ALLOW_SHARED_ROLE_PRIORITY),
+                eq(WALLET_HOLDER_PACKAGE_NAME)))
+                .thenReturn(new PackageManager.Property(
+                        CardEmulation.PROPERTY_ALLOW_SHARED_ROLE_PRIORITY,
+                        WALLET_HOLDER_2_PACKAGE_NAME, WALLET_HOLDER_PACKAGE_NAME, null));
+
+        mRegisteredAidCache = new RegisteredAidCache(mContext, mWalletRoleObserver,
+                mAidRoutingManager);
+        mRegisteredAidCache.mNfcEnabled = true;
+
+        List<ApduServiceInfo> apduServiceInfos = new ArrayList<>();
+        // Preferred wallet service with root prefix payment AID
+        apduServiceInfos.add(createServiceInfoForAidRouting(
+                WALLET_PAYMENT_SERVICE,
+                true,
+                List.of(PREFIX_PAYMENT_AID),
+                List.of(CardEmulation.CATEGORY_PAYMENT),
+                false,
+                true,
+                USER_ID,
+                true,
+                true));
+        // Another service in the same wallet holder package with child prefix AID
+        apduServiceInfos.add(createServiceInfoForAidRouting(
+                WALLET_PAYMENT_SERVICE_2,
+                true,
+                List.of("A0000000041010*"),
+                List.of(CardEmulation.CATEGORY_PAYMENT),
+                false,
+                true,
+                USER_ID,
+                true,
+                true));
+
+        mRegisteredAidCache.generateUserApduServiceInfoLocked(USER_ID, apduServiceInfos);
+        mRegisteredAidCache.generateServiceMapLocked(apduServiceInfos);
+        mRegisteredAidCache.onWalletRoleHolderChanged(WALLET_HOLDER_PACKAGE_NAME, USER_ID);
+
+        mRegisteredAidCache.generateAidCacheLocked();
+
+        RegisteredAidCache.AidResolveInfo paymentResolveInfo =
+                mRegisteredAidCache.resolveAid("A0000000041010");
+
+        assertNotNull(paymentResolveInfo.defaultService);
+        assertEquals(WALLET_PAYMENT_SERVICE, paymentResolveInfo.defaultService.getComponent());
+    }
 }
