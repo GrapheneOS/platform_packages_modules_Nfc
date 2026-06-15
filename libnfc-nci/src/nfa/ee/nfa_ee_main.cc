@@ -517,7 +517,7 @@ tNFA_EE_ECB* nfa_ee_find_ecb_by_conn_id(uint8_t conn_id) {
   LOG(VERBOSE) << __func__;
 
   p_cb = nfa_ee_cb.ecb;
-  for (xx = 0; xx < nfa_ee_cb.cur_ee; xx++, p_cb++) {
+  for (xx = 0; xx < nfa_ee_cb.cur_ee && xx < NFA_EE_NUM_ECBS; xx++, p_cb++) {
     if (conn_id == p_cb->conn_id) {
       p_ret = p_cb;
       break;

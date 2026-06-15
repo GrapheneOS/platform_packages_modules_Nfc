@@ -1922,7 +1922,7 @@ bool nfa_ee_restore_ntf_done(void) {
   int xx;
 
   p_cb = nfa_ee_cb.ecb;
-  for (xx = 0; xx < nfa_ee_cb.cur_ee; xx++, p_cb++) {
+  for (xx = 0; xx < nfa_ee_cb.cur_ee && xx < NFA_EE_NUM_ECBS; xx++, p_cb++) {
     if ((p_cb->nfcee_id != NFA_EE_INVALID) &&
         (p_cb->ee_old_status & NFA_EE_STATUS_RESTORING)) {
       is_done = false;
@@ -1948,7 +1948,7 @@ static void nfa_ee_remove_pending(void) {
   int first_removed = NFA_EE_MAX_EE_SUPPORTED;
 
   p_cb = nfa_ee_cb.ecb;
-  for (xx = 0; xx < nfa_ee_cb.cur_ee; xx++, p_cb++) {
+  for (xx = 0; xx < nfa_ee_cb.cur_ee && xx < NFA_EE_NUM_ECBS; xx++, p_cb++) {
     if ((p_cb->nfcee_id != NFA_EE_INVALID) &&
         (p_cb->ee_status & NFA_EE_STATUS_RESTORING)) {
       p_cb->nfcee_id = NFA_EE_INVALID;
@@ -2073,6 +2073,7 @@ void nfa_ee_nci_disc_ntf(tNFA_EE_MSG* p_data) {
   bool notify_new_ee = false;
   bool notify_ndef_nfcee = false;
   bool store_info = true;
+  bool incremented = false;
   tNFA_EE_CBACK_DATA evt_data = {0};
   tNFA_EE_INFO* p_info;
   tNFA_EE_EM_STATE new_em_state = NFA_EE_EM_STATE_MAX;
@@ -2095,6 +2096,7 @@ void nfa_ee_nci_disc_ntf(tNFA_EE_MSG* p_data) {
       if (nfa_ee_cb.cur_ee < NFA_EE_MAX_EE_SUPPORTED) {
         /* the cb can collect up to NFA_EE_MAX_EE_SUPPORTED ee_info */
         p_cb = &nfa_ee_cb.ecb[nfa_ee_cb.cur_ee++];
+        incremented = true;
       }
 
       if (nfa_ee_cb.num_ee_expecting == 0) {
@@ -2112,10 +2114,12 @@ void nfa_ee_nci_disc_ntf(tNFA_EE_MSG* p_data) {
         p_cb = nfa_ee_find_ecb(NFA_EE_INVALID);
         if (p_cb && nfa_ee_cb.cur_ee < NFA_EE_MAX_EE_SUPPORTED) {
           nfa_ee_cb.cur_ee++;
+          incremented = true;
           notify_new_ee = true;
         }
       } else if (p_cb->ecb_flags & NFA_EE_ECB_FLAGS_ORDER) {
         nfa_ee_cb.cur_ee++;
+        incremented = true;
         notify_new_ee = true;
       } else {
         LOG(VERBOSE) << StringPrintf(
@@ -2132,6 +2136,7 @@ void nfa_ee_nci_disc_ntf(tNFA_EE_MSG* p_data) {
         p_cb = nfa_ee_find_ecb(NFA_EE_INVALID);
         if (p_cb && nfa_ee_cb.cur_ee < NFA_EE_MAX_EE_SUPPORTED) {
           nfa_ee_cb.cur_ee++;
+          incremented = true;
           notify_new_ee = true;
         }
       }
@@ -2174,7 +2179,7 @@ void nfa_ee_nci_disc_ntf(tNFA_EE_MSG* p_data) {
       memcpy(p_cb->ee_tlv, p_ee->ee_tlv, p_ee->num_tlvs * sizeof(tNFA_EE_TLV));
       if (NFA_GetNCIVersion() >= NCI_VERSION_2_0)
         p_cb->ee_power_supply_status = p_ee->nfcee_power_ctrl;
-    } else {
+    } else if (incremented) {
       nfa_ee_cb.cur_ee--;
     }
     if (nfa_ee_cb.em_state == NFA_EE_EM_STATE_RESTORING) {
@@ -2316,7 +2321,7 @@ void nfa_ee_check_restore_complete(void) {
   bool proc_complete = true;
 
   p_cb = nfa_ee_cb.ecb;
-  for (xx = 0; xx < nfa_ee_cb.cur_ee; xx++, p_cb++) {
+  for (xx = 0; xx < nfa_ee_cb.cur_ee && xx < NFA_EE_NUM_ECBS; xx++, p_cb++) {
     if (p_cb->ecb_flags & NFA_EE_ECB_FLAGS_RESTORE) {
       /* NFA_HCI module handles restoring configurations for HCI access.
        * ignore the restoring status for HCI Access */
@@ -2361,7 +2366,7 @@ static void nfa_ee_build_discover_req_evt(tNFA_EE_DISCOVER_REQ* p_evt_data) {
   p_cb = nfa_ee_cb.ecb;
   p_info = p_evt_data->ee_disc_info;
 
-  for (xx = 0; xx < nfa_ee_cb.cur_ee; xx++, p_cb++) {
+  for (xx = 0; xx < nfa_ee_cb.cur_ee && xx < NFA_EE_NUM_ECBS; xx++, p_cb++) {
     if ((p_cb->ee_status & NFA_EE_STATUS_INT_MASK) ||
         ((p_cb->ee_status != NFA_EE_STATUS_ACTIVE) &&
          (p_cb->ee_status !=
@@ -2807,7 +2812,7 @@ bool nfa_ee_is_active(tNFA_HANDLE nfcee_id) {
   if (nfcee_id == NFC_DH_ID) return true;
 
   /* compose output */
-  for (xx = 0; xx < nfa_ee_cb.cur_ee; xx++, p_cb++) {
+  for (xx = 0; xx < nfa_ee_cb.cur_ee && xx < NFA_EE_NUM_ECBS; xx++, p_cb++) {
     if ((tNFA_HANDLE)p_cb->nfcee_id == nfcee_id) {
       if ((p_cb->ee_status & ~NFA_EE_STATUS_MEP_MASK) ==
           NFC_NFCEE_STATUS_ACTIVE) {
@@ -3161,7 +3166,7 @@ void nfa_ee_lmrt_to_nfcc(__attribute__((unused)) tNFA_EE_MSG* p_data) {
     /* add the routing entries for NFCEEs */
     p_cb = &nfa_ee_cb.ecb[0];
 
-    for (xx = 0; (xx < nfa_ee_cb.cur_ee) && check; xx++, p_cb++) {
+    for (xx = 0; (xx < nfa_ee_cb.cur_ee) && (xx < NFA_EE_NUM_ECBS) && check; xx++, p_cb++) {
       if ((p_cb->ee_status & ~NFA_EE_STATUS_MEP_MASK) ==
           NFC_NFCEE_STATUS_ACTIVE) {
         nfa_ee_route_add_one_ecb_by_route_order(p_cb, rt, &max_len, more, p,
