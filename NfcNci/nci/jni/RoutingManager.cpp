@@ -1106,6 +1106,11 @@ bool RoutingManager::checkUiccListenConfigNeeded(
     }
   }
   if (!found) {
+    if (mNfceeListenConfig.nb_config >= NFA_EE_MAX_EE_SUPPORTED) {
+      LOG(ERROR) << StringPrintf("%s: Exceeded max EE supported count (%d)", fn,
+                                 NFA_EE_MAX_EE_SUPPORTED);
+      return false;
+    }
     mNfceeListenConfig.config[mNfceeListenConfig.nb_config].nfcee_id = eeHandle;
     mNfceeListenConfig.config[mNfceeListenConfig.nb_config].tech_mask =
         seTechMask;
