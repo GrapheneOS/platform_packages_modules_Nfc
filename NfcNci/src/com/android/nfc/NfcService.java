@@ -1385,6 +1385,16 @@ public class NfcService implements DeviceHostListener, ForegroundUtils.Callback 
         mForegroundUtils = mNfcInjector.getForegroundUtils();
         mIsSecureNfcCapable = mIsHceCapable && mDeviceConfigFacade.isSecureNfcCapable();
         String secureNfcPreferenceKey = getSecureNfcPreferenceKeyForUser(mUserId);
+        if (mUserId == UserHandle.SYSTEM.getIdentifier() && mPrefs.contains(PREF_SECURE_NFC_ON)) {
+            boolean oldSecureNfcEnabled = mPrefs.getBoolean(PREF_SECURE_NFC_ON,
+                    mDeviceConfigFacade.getDefaultSecureNfcState())
+                    && mIsSecureNfcCapable;
+            mPrefsEditor.putBoolean(secureNfcPreferenceKey, oldSecureNfcEnabled);
+            mPrefsEditor.remove(PREF_SECURE_NFC_ON);
+            mPrefsEditor.apply();
+            Log.i(TAG, "OTA Migration: Successfully migrated legacy PREF_SECURE_NFC_ON ("
+                + oldSecureNfcEnabled + ") to " + secureNfcPreferenceKey + " and removed old key.");
+        }
         mIsSecureNfcEnabled = mPrefs.getBoolean(secureNfcPreferenceKey,
             mDeviceConfigFacade.getDefaultSecureNfcState())
             && mIsSecureNfcCapable;
