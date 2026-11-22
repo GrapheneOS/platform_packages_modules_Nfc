@@ -280,6 +280,7 @@ public class NfcService implements DeviceHostListener, ForegroundUtils.Callback 
     static final int TASK_BOOT = 3;
     static final int TASK_ENABLE_ALWAYS_ON = 4;
     static final int TASK_DISABLE_ALWAYS_ON = 5;
+    static final int TASK_AUTO_OFF = 6;
 
     // SE selected types
     public static final int SE_SELECTED_AID = 0x01;
@@ -565,6 +566,9 @@ public class NfcService implements DeviceHostListener, ForegroundUtils.Callback 
     private VibrationEffect mVibrationEffect;
     private ISecureElementService mSEService;
     private final AlarmManager mAlarmManager;
+    private final AlarmManager.OnAlarmListener mAutoOffAlarm = this::onAutoOffAlarm;
+    @GuardedBy("this") private long mAutoOffDeadline;
+    @GuardedBy("this") private int mAutoOffTimeoutMillis;
 
     private ScreenStateHelper mScreenStateHelper;
     private ForegroundUtils mForegroundUtils;
@@ -1105,9 +1109,77 @@ public class NfcService implements DeviceHostListener, ForegroundUtils.Callback 
 
     void saveNfcOnSetting(boolean on) {
         synchronized (NfcService.this) {
+            // An off/on request can overtake a queued timeout before the adapter changes state.
+            if (on && mAutoOffTimeoutMillis > 0 && !getNfcOnSetting()) {
+                scheduleAutoOffAlarm();
+            }
             mPrefsEditor.putBoolean(PREF_NFC_ON, on);
             mPrefsEditor.apply();
             mBackupManager.dataChanged();
+        }
+    }
+
+    private synchronized void updateAutoOffAlarm() {
+        int timeout = 0;
+        if (mState.get() == NfcAdapter.STATE_ON) {
+            int setting = mNfcInjector.getAutoOffTimeoutMillis();
+            if (setting > 0 && !isNfcUserChangeRestricted()) timeout = setting;
+        }
+        if (timeout == mAutoOffTimeoutMillis) return;
+
+        mAutoOffTimeoutMillis = timeout;
+        if (timeout > 0) {
+            scheduleAutoOffAlarm();
+        } else {
+            mAlarmManager.cancel(mAutoOffAlarm);
+        }
+    }
+
+    @GuardedBy("this")
+    private void scheduleAutoOffAlarm() {
+        mAutoOffDeadline = mNfcInjector.getElapsedSinceBootMillis() + mAutoOffTimeoutMillis;
+        mAlarmManager.setExact(AlarmManager.ELAPSED_REALTIME_WAKEUP, mAutoOffDeadline,
+                "NfcAutoOff", mAutoOffAlarm, mHandler);
+    }
+
+    private void onAutoOffAlarm() {
+        // AlarmManager releases its wake lock when this callback returns. Keep the device
+        // awake until the adapter task queue has processed the timeout.
+        var wakeLock = mPowerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "Nfc:AutoOff");
+        wakeLock.acquire(INIT_WATCHDOG_MS + ROUTING_WATCHDOG_MS);
+        new EnableDisableTask() {
+            @Override
+            protected Boolean doInBackground(Integer... params) {
+                try {
+                    return super.doInBackground(params);
+                } finally {
+                    wakeLock.release();
+                }
+            }
+        }.execute(TASK_AUTO_OFF);
+    }
+
+    private synchronized boolean isAutoOffDue() {
+        // A toggle or setting change may overtake an already delivered alarm.
+        updateAutoOffAlarm();
+        return mAutoOffTimeoutMillis > 0
+                && mNfcInjector.getElapsedSinceBootMillis() >= mAutoOffDeadline;
+    }
+
+    private boolean commitAutoOff() {
+        boolean allowed = allowOemDisable(); // May call back into the service.
+        synchronized (this) {
+            if (!isAutoOffDue()) return false;
+            if (!allowed) {
+                scheduleAutoOffAlarm();
+                return false;
+            }
+            saveNfcOnSetting(false);
+            if (android.nfc.Flags.nfcStateChangeSecurityLogEventEnabled()) {
+                SecurityLog.writeEvent(SecurityLog.TAG_NFC_DISABLED);
+            }
+            Log.i(TAG, "Turning off NFC after timeout");
+            return true;
         }
     }
 
@@ -1453,6 +1525,15 @@ public class NfcService implements DeviceHostListener, ForegroundUtils.Callback 
                 Arrays.asList(mContext.getResources().getStringArray(
                         R.array.tag_intent_blocked_app_list)));
 
+        mContentResolver.registerContentObserver(
+                Settings.Global.getUriFor(Settings.Global.NFC_AUTO_OFF), false,
+                new ContentObserver(mHandler) {
+                    @Override
+                    public void onChange(boolean selfChange) {
+                        updateAutoOffAlarm();
+                    }
+                });
+
         Uri uri = Settings.Global.getUriFor(Constants.SETTINGS_SATELLITE_MODE_ENABLED);
         if (uri == null) {
             Log.e(TAG, "NfcService(constructor): satellite mode key does not exist in Settings");
@@ -1487,6 +1568,7 @@ public class NfcService implements DeviceHostListener, ForegroundUtils.Callback 
                 new BroadcastReceiver() {
                     @Override
                     public void onReceive(Context context, Intent intent) {
+                        updateAutoOffAlarm();
                         if (mIsNfcUserRestricted == isNfcUserRestricted()) {
                             return;
                         }
@@ -1873,12 +1955,18 @@ public class NfcService implements DeviceHostListener, ForegroundUtils.Callback 
                         result = false;
                     }
                     break;
+                case TASK_AUTO_OFF:
                 case TASK_DISABLE:
-                    if (allowOemDisable()) {
+                    if (action == TASK_AUTO_OFF && !isAutoOffDue()) {
+                        result = false;
+                        break;
+                    }
+                    result = action == TASK_AUTO_OFF ? commitAutoOff() : allowOemDisable();
+                    // Report completion even when the OEM vetoes the request.
+                    action = TASK_DISABLE;
+                    if (result) {
                         onOemPreExecute();
                         result = disableInternal();
-                    } else {
-                        result = false;
                     }
                     break;
                 case TASK_BOOT:
@@ -2271,6 +2359,7 @@ public class NfcService implements DeviceHostListener, ForegroundUtils.Callback 
             }
             mState.set(newState);
             synchronized (NfcService.this) {
+                updateAutoOffAlarm();
                 if (android.nfc.Flags.nfcEventListener() && mCardEmulationManager != null) {
                     mCardEmulationManager.onNfcStateChanged(newState);
                 }

@@ -295,6 +295,11 @@ public class NfcInjector {
                 mContext.getContentResolver(), Constants.SETTINGS_SATELLITE_MODE_ENABLED, 0) == 1;
     }
 
+    int getAutoOffTimeoutMillis() {
+        return Settings.Global.getInt(
+                mContext.getContentResolver(), Settings.Global.NFC_AUTO_OFF, 0);
+    }
+
     public static boolean isPrivileged(int callingUid) {
         // Check for root uid to help invoking privileged APIs from rooted shell only.
         return callingUid == Process.SYSTEM_UID || callingUid == Process.NFC_UID

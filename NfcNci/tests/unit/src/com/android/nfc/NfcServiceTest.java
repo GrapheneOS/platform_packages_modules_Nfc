@@ -41,6 +41,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyFloat;
 import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
@@ -121,11 +122,13 @@ import android.platform.test.annotations.EnableFlags;
 import android.platform.test.flag.junit.CheckFlagsRule;
 import android.platform.test.flag.junit.DeviceFlagsValueProvider;
 import android.platform.test.flag.junit.SetFlagsRule;
+import android.provider.Settings;
 import android.se.omapi.ISecureElementService;
 import android.sysprop.NfcProperties;
 import android.view.Display;
 
 import androidx.test.ext.junit.runners.AndroidJUnit4;
+import androidx.test.platform.app.InstrumentationRegistry;
 
 import com.android.dx.mockito.inline.extended.ExtendedMockito;
 import com.android.nfc.cardemulation.CardEmulationManager;
@@ -161,6 +164,8 @@ import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.BooleanSupplier;
 
 @RunWith(AndroidJUnit4.class)
 public final class NfcServiceTest {
@@ -368,6 +373,230 @@ public final class NfcServiceTest {
         disableAndVerify();
     }
 
+    private AlarmManager.OnAlarmListener getAutoOffAlarm(long deadline) {
+        var listener = ArgumentCaptor.forClass(AlarmManager.OnAlarmListener.class);
+        verify(mAlarmManager).setExact(eq(AlarmManager.ELAPSED_REALTIME_WAKEUP),
+                eq(deadline), eq("NfcAutoOff"), listener.capture(), any(Handler.class));
+        return listener.getValue();
+    }
+
+    private AlarmManager.OnAlarmListener enableWithAutoOff(int timeoutMillis) throws Exception {
+        when(mNfcInjector.getAutoOffTimeoutMillis()).thenReturn(timeoutMillis);
+        enableAndVerify();
+        return getAutoOffAlarm(timeoutMillis);
+    }
+
+    private void notifyAutoOffSettingChanged() {
+        var observer = ArgumentCaptor.forClass(ContentObserver.class);
+        verify(mContentResolver).registerContentObserver(
+                eq(Settings.Global.getUriFor(Settings.Global.NFC_AUTO_OFF)), eq(false),
+                observer.capture());
+        observer.getValue().onChange(false);
+    }
+
+    @Test
+    public void testAutoOffAcrossUsers() throws Exception {
+        when(mNfcInjector.getAutoOffTimeoutMillis()).thenReturn(15_000);
+        BroadcastReceiver receiver = mGlobalReceiver.getValue();
+        receiver.onReceive(mApplication,
+                new Intent(Intent.ACTION_USER_SWITCHED).putExtra(Intent.EXTRA_USER_HANDLE, 10));
+        assertEquals(10, mNfcService.getUserId());
+        enableAndVerify();
+        var alarm = getAutoOffAlarm(15_000);
+        clearInvocations(mAlarmManager);
+        when(mNfcInjector.getElapsedSinceBootMillis()).thenReturn(10_000L);
+        receiver.onReceive(mApplication,
+                new Intent(Intent.ACTION_USER_SWITCHED).putExtra(Intent.EXTRA_USER_HANDLE, 11));
+        assertEquals(11, mNfcService.getUserId());
+        verify(mAlarmManager, never()).cancel(alarm);
+        when(mNfcInjector.getElapsedSinceBootMillis()).thenReturn(15_000L);
+        when(mDeviceHost.deinitialize()).thenReturn(true);
+        alarm.onAlarm();
+        mLooper.dispatchAll();
+        verify(mPreferencesEditor).putBoolean(PREF_NFC_ON, false);
+        verify(mDeviceHost).deinitialize();
+        assertEquals(NfcAdapter.STATE_OFF, mNfcService.mState.get());
+    }
+
+    @Test
+    public void testLateAutoOffAfterReenable() throws Exception {
+        var alarm = enableWithAutoOff(15_000);
+        disableAndVerify();
+        when(mNfcInjector.getElapsedSinceBootMillis()).thenReturn(14_000L);
+        enableAndVerify();
+        getAutoOffAlarm(29_000);
+        when(mNfcInjector.getElapsedSinceBootMillis()).thenReturn(15_000L);
+        alarm.onAlarm();
+        mLooper.dispatchAll();
+        verify(mPreferencesEditor, never()).putBoolean(PREF_NFC_ON, false);
+        verify(mDeviceHost, never()).deinitialize();
+    }
+
+    @Test
+    public void testManualOffOnWhileAutoOffIsQueued() throws Exception {
+        var alarm = enableWithAutoOff(15_000);
+        // Let preference writes take effect before their adapter tasks execute.
+        doAnswer(call -> {
+            boolean on = call.getArgument(1);
+            when(mPreferences.getBoolean(eq(PREF_NFC_ON), anyBoolean())).thenReturn(on);
+            return mPreferencesEditor;
+        }).when(mPreferencesEditor).putBoolean(eq(PREF_NFC_ON), anyBoolean());
+        when(mNfcInjector.getElapsedSinceBootMillis()).thenReturn(15_000L);
+        alarm.onAlarm();
+        mNfcService.mNfcAdapter.disable(true, PKG_NAME);
+        mNfcService.mNfcAdapter.enable(PKG_NAME);
+        mLooper.dispatchAll();
+        verify(mPreferencesEditor).putBoolean(PREF_NFC_ON, false);
+        verify(mDeviceHost).deinitialize();
+        assertEquals(NfcAdapter.STATE_ON, mNfcService.mState.get());
+    }
+
+    @Test
+    public void testTemporaryDisableDoesNotPersistAutoOff() throws Exception {
+        var alarm = enableWithAutoOff(15_000);
+        mNfcService.mNfcAdapter.disable(false, PKG_NAME);
+        when(mNfcInjector.getElapsedSinceBootMillis()).thenReturn(15_000L);
+        alarm.onAlarm();
+        mLooper.dispatchAll();
+        verify(mDeviceHost).deinitialize();
+        verify(mPreferencesEditor, never()).putBoolean(PREF_NFC_ON, false);
+        assertEquals(NfcAdapter.STATE_OFF, mNfcService.mState.get());
+    }
+
+    @Test
+    public void testAutoOffSettingChangedWhileEnabled() throws Exception {
+        when(mNfcInjector.getAutoOffTimeoutMillis()).thenReturn(0);
+        enableAndVerify();
+        verifyNoMoreInteractions(mAlarmManager);
+        when(mNfcInjector.getAutoOffTimeoutMillis()).thenReturn(30_000);
+        notifyAutoOffSettingChanged();
+        var alarm = getAutoOffAlarm(30_000);
+        when(mNfcInjector.getElapsedSinceBootMillis()).thenReturn(25_000L);
+        notifyAutoOffSettingChanged(); // The timeout is unchanged.
+        verifyNoMoreInteractions(mAlarmManager);
+
+        when(mNfcInjector.getAutoOffTimeoutMillis()).thenReturn(0);
+        notifyAutoOffSettingChanged();
+        verify(mAlarmManager).cancel(alarm);
+    }
+
+    private INfcOemExtensionCallback registerOemDisableCallback(BooleanSupplier allowDisable)
+            throws Exception {
+        var callback = mock(INfcOemExtensionCallback.class);
+        when(callback.asBinder()).thenReturn(mock(IBinder.class));
+        mNfcService.mNfcAdapter.registerOemExtensionCallback(callback);
+        doAnswer(call -> {
+            ResultReceiver receiver = call.getArgument(0);
+            receiver.send(allowDisable.getAsBoolean() ? 1 : 0, null);
+            return null;
+        }).when(callback).onDisable(any());
+        return callback;
+    }
+
+    @Test
+    public void testManualDisableVetoKeepsAutoOffDeadline() throws Exception {
+        var alarm = enableWithAutoOff(15_000);
+        var callback = registerOemDisableCallback(() -> false);
+        when(mNfcInjector.getElapsedSinceBootMillis()).thenReturn(10_000L);
+        when(mPreferences.getBoolean(eq(PREF_NFC_ON), anyBoolean())).thenReturn(false);
+        mNfcService.mNfcAdapter.disable(true, PKG_NAME);
+        mLooper.dispatchAll();
+        verify(mPreferencesEditor).putBoolean(PREF_NFC_ON, false);
+        assertEquals(NfcAdapter.STATE_ON, mNfcService.mState.get());
+        verifyNoMoreInteractions(mAlarmManager);
+
+        mNfcService.mNfcAdapter.unregisterOemExtensionCallback(callback);
+        when(mNfcInjector.getElapsedSinceBootMillis()).thenReturn(15_000L);
+        alarm.onAlarm();
+        mLooper.dispatchAll();
+        verify(mDeviceHost).deinitialize();
+        assertEquals(NfcAdapter.STATE_OFF, mNfcService.mState.get());
+    }
+
+    @Test
+    public void testAutoOffRetriesAfterOemVeto() throws Exception {
+        var alarm = enableWithAutoOff(15_000);
+        var allowDisable = new AtomicBoolean(false);
+        var callback = registerOemDisableCallback(allowDisable::get);
+        var wakeLock = mock(PowerManager.WakeLock.class);
+        when(mPowerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "Nfc:AutoOff"))
+                .thenReturn(wakeLock);
+        when(mNfcInjector.getElapsedSinceBootMillis()).thenReturn(15_000L);
+        alarm.onAlarm();
+        verify(wakeLock).acquire(anyLong());
+        mLooper.dispatchAll();
+        InOrder order = inOrder(callback, wakeLock);
+        order.verify(callback).onDisable(any());
+        order.verify(wakeLock).release();
+        InstrumentationRegistry.getInstrumentation().waitForIdleSync();
+        verify(callback, never()).onDisableStarted();
+        verify(callback).onDisableFinished(NfcOemExtension.STATUS_UNKNOWN_ERROR);
+        verify(mPreferencesEditor, never()).putBoolean(PREF_NFC_ON, false);
+        verify(mDeviceHost, never()).deinitialize();
+
+        allowDisable.set(true);
+        when(mDeviceHost.deinitialize()).thenReturn(true);
+        when(mNfcInjector.getElapsedSinceBootMillis()).thenReturn(30_000L);
+        getAutoOffAlarm(30_000).onAlarm();
+        mLooper.dispatchAll();
+        verify(mPreferencesEditor).putBoolean(PREF_NFC_ON, false);
+        verify(mDeviceHost).deinitialize();
+        InstrumentationRegistry.getInstrumentation().waitForIdleSync();
+        order.verify(callback).onDisable(any());
+        order.verify(callback).onDisableStarted();
+        order.verify(callback).onDisableFinished(NfcOemExtension.STATUS_OK);
+    }
+
+    @Test
+    public void testAutoOffSettingChangedWhileAlarmIsQueued() throws Exception {
+        var alarm = enableWithAutoOff(15_000);
+        var callback = registerOemDisableCallback(() -> true);
+        when(mNfcInjector.getElapsedSinceBootMillis()).thenReturn(15_000L);
+        alarm.onAlarm();
+        // The worker runs before the setting observer is notified.
+        when(mNfcInjector.getAutoOffTimeoutMillis()).thenReturn(30_000);
+        mLooper.dispatchAll();
+        getAutoOffAlarm(45_000);
+        verify(mPreferencesEditor, never()).putBoolean(PREF_NFC_ON, false);
+        verify(mDeviceHost, never()).deinitialize();
+        InstrumentationRegistry.getInstrumentation().waitForIdleSync();
+        verify(callback, never()).onDisable(any());
+        verify(callback, never()).onDisableFinished(anyInt());
+    }
+
+    @Test
+    public void testAutoOffDisabledDuringOemCallback() throws Exception {
+        var alarm = enableWithAutoOff(15_000);
+        var callback = registerOemDisableCallback(() -> {
+            when(mNfcInjector.getAutoOffTimeoutMillis()).thenReturn(0);
+            return true;
+        });
+        when(mNfcInjector.getElapsedSinceBootMillis()).thenReturn(15_000L);
+        alarm.onAlarm();
+        mLooper.dispatchAll();
+        verify(callback).onDisable(any());
+        verify(mPreferencesEditor, never()).putBoolean(PREF_NFC_ON, false);
+        verify(mDeviceHost, never()).deinitialize();
+    }
+
+    @Test
+    public void testAutoOffResumesAfterRestrictionLifted() throws Exception {
+        var alarm = enableWithAutoOff(15_000);
+        when(mNfcInjector.getElapsedSinceBootMillis()).thenReturn(15_000L);
+        when(mUserRestrictions.getBoolean(UserManager.DISALLOW_CHANGE_NEAR_FIELD_COMMUNICATION_RADIO))
+                .thenReturn(true);
+        alarm.onAlarm();
+        mLooper.dispatchAll();
+        verify(mPreferencesEditor, never()).putBoolean(PREF_NFC_ON, false);
+        verify(mDeviceHost, never()).deinitialize();
+
+        when(mUserRestrictions.getBoolean(UserManager.DISALLOW_CHANGE_NEAR_FIELD_COMMUNICATION_RADIO))
+                .thenReturn(false);
+        mBroadcastReceiverArgumentCaptor.getValue().onReceive(mApplication,
+                new Intent(UserManager.ACTION_USER_RESTRICTIONS_CHANGED));
+        getAutoOffAlarm(30_000);
+    }
+
     @Test
     public void testEnable_clearsObjectMaps() throws Exception {
         // Add mock objects to object maps
@@ -476,6 +705,8 @@ public final class NfcServiceTest {
     @Test
     public void testBootupWithNfcOn() throws Exception {
         when(mPreferences.getBoolean(eq(PREF_NFC_ON), anyBoolean())).thenReturn(true);
+        when(mDeviceHost.initialize()).thenReturn(true);
+        when(mNfcInjector.getAutoOffTimeoutMillis()).thenReturn(15_000);
         mNfcService = new NfcService(mApplication, mNfcInjector);
         mLooper.dispatchAll();
         verify(mNfcInjector).makeDeviceHost(mDeviceHostListener.capture());
@@ -483,6 +714,7 @@ public final class NfcServiceTest {
                 mGlobalReceiver.capture(),
                 argThat(intent -> intent.hasAction(Intent.ACTION_SCREEN_ON)), any(), any());
         verify(mDeviceHost).initialize();
+        getAutoOffAlarm(15_000);
     }
 
     @Test
