@@ -421,6 +421,8 @@ public final class NfcServiceTest {
     @Test
     public void testLateAutoOffAfterReenable() throws Exception {
         var alarm = enableWithAutoOff(15_000);
+        mNfcService.onHostCardEmulationActivated(1);
+        // The controller shuts down without reporting the end of the session.
         disableAndVerify();
         when(mNfcInjector.getElapsedSinceBootMillis()).thenReturn(14_000L);
         enableAndVerify();
@@ -428,6 +430,67 @@ public final class NfcServiceTest {
         when(mNfcInjector.getElapsedSinceBootMillis()).thenReturn(15_000L);
         alarm.onAlarm();
         mLooper.dispatchAll();
+        verify(mPreferencesEditor, never()).putBoolean(PREF_NFC_ON, false);
+        verify(mDeviceHost, never()).deinitialize();
+    }
+
+    @Test
+    public void testAutoOffAfterTagDisconnects() throws Exception {
+        var alarm = enableWithAutoOff(15_000);
+        mNfcService.onTagConnectionChanged(true);
+        mLooper.dispatchAll();
+        verify(mAlarmManager).cancel(alarm);
+        when(mNfcInjector.getElapsedSinceBootMillis()).thenReturn(20_000L);
+        alarm.onAlarm();
+        mLooper.dispatchAll();
+        verify(mDeviceHost, never()).deinitialize();
+
+        mNfcService.onTagConnectionChanged(false);
+        when(mNfcInjector.getElapsedSinceBootMillis()).thenReturn(22_000L);
+        mLooper.dispatchAll();
+        getAutoOffAlarm(35_000);
+        when(mNfcInjector.getElapsedSinceBootMillis()).thenReturn(34_000L);
+        // Discovery without a selected tag does not start a connection.
+        mNfcService.onTagRfDiscovered(true);
+        mNfcService.onTagRfDiscovered(false);
+        mLooper.dispatchAll();
+        when(mNfcInjector.getElapsedSinceBootMillis()).thenReturn(35_000L);
+        when(mDeviceHost.deinitialize()).thenReturn(true);
+        alarm.onAlarm();
+        mLooper.dispatchAll();
+        verify(mPreferencesEditor).putBoolean(PREF_NFC_ON, false);
+        verify(mDeviceHost).deinitialize();
+    }
+
+    @Test
+    public void testAutoOffAfterLastReaderDisconnects() throws Exception {
+        enableAndVerify();
+        mNfcService.onEeListenActivated(true);
+        when(mNfcInjector.getAutoOffTimeoutMillis()).thenReturn(15_000);
+        notifyAutoOffSettingChanged();
+        mNfcService.onHostCardEmulationActivated(1);
+        mNfcService.onHostCardEmulationDeactivated(1);
+        mLooper.dispatchAll();
+        verifyNoMoreInteractions(mAlarmManager);
+
+        when(mNfcInjector.getElapsedSinceBootMillis()).thenReturn(15_000L);
+        mNfcService.onEeListenActivated(false);
+        mLooper.dispatchAll();
+        getAutoOffAlarm(30_000);
+    }
+
+    @Test
+    public void testTapDuringAutoOffOemCallback() throws Exception {
+        var alarm = enableWithAutoOff(15_000);
+        registerOemDisableCallback(() -> {
+            mNfcService.onHostCardEmulationActivated(1);
+            mNfcService.onHostCardEmulationDeactivated(1);
+            return true;
+        });
+        when(mNfcInjector.getElapsedSinceBootMillis()).thenReturn(15_000L);
+        alarm.onAlarm();
+        mLooper.dispatchAll();
+        getAutoOffAlarm(30_000);
         verify(mPreferencesEditor, never()).putBoolean(PREF_NFC_ON, false);
         verify(mDeviceHost, never()).deinitialize();
     }

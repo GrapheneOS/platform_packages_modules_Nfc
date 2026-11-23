@@ -57,6 +57,8 @@ public interface DeviceHost {
 
         public void onTagRfDiscovered(boolean discovered);
 
+        public void onTagConnectionChanged(boolean connected);
+
         public void onVendorSpecificEvent(int gid, int oid, byte[] payload);
 
         public void onObserveModeStateChanged(boolean enable);

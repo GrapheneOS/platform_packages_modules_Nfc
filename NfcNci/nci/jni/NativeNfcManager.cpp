@@ -105,6 +105,7 @@ jmethodID gCachedNfcManagerNotifyRfFieldActivated;
 jmethodID gCachedNfcManagerNotifyRfFieldDeactivated;
 jmethodID gCachedNfcManagerNotifyEeUpdated;
 jmethodID gCachedNfcManagerNotifyTagDiscovered;
+static jmethodID sNotifyTagConnectionChanged;
 jmethodID gCachedNfcManagerNotifyHwErrorReported;
 jmethodID gCachedNfcManagerNotifyPollingLoopFrame;
 jmethodID gCachedNfcManagerNotifyWlcStopped;
@@ -312,6 +313,21 @@ static void handleRfDiscoveryEvent(tNFC_RESULT_DEVT* discoveredDevice) {
   natTag.selectFirstTag();
 }
 
+static void notifyRfConnectionChanged(jmethodID callback, bool connected) {
+  auto* nat = getNative(nullptr, nullptr);
+  if (!nat) {
+    LOG(ERROR) << __func__ << ": cached nat is null";
+    return;
+  }
+  JNIEnv* env = nullptr;
+  ScopedAttach attach(nat->vm, &env);
+  if (!env) {
+    LOG(ERROR) << __func__ << ": jni env is null";
+    return;
+  }
+  env->CallVoidMethod(nat->manager, callback, connected);
+}
+
 /*******************************************************************************
 **
 ** Function:        nfaConnectionCallback
@@ -508,6 +524,7 @@ static void nfaConnectionCallback(uint8_t connEvent,
       gActivated = true;
 
       if (notListen) {
+        notifyRfConnectionChanged(sNotifyTagConnectionChanged, true);
         updateNfcID0Param(
             eventData->activated.activate_ntf.rf_tech_param.param.pb.nfcid0);
         NfcTag::getInstance().setActivationState();
@@ -547,23 +564,12 @@ static void nfaConnectionCallback(uint8_t connEvent,
         // listen mode then it is likely for an SE transaction.
         // Send the RF Event.
         sSeRfActive = true;
-        struct nfc_jni_native_data* nat = getNative(NULL, NULL);
-        if (!nat) {
-          LOG(ERROR) << StringPrintf("%s: cached nat is null", __func__);
-          return;
-        }
-        JNIEnv* e = NULL;
-        ScopedAttach attach(nat->vm, &e);
-        if (e == NULL) {
-          LOG(ERROR) << __func__ << ": jni env is null";
-          return;
-        }
-        e->CallVoidMethod(nat->manager,
-                          android::gCachedNfcManagerNotifyEeListenActivated,
-                          JNI_TRUE);
+        notifyRfConnectionChanged(gCachedNfcManagerNotifyEeListenActivated, true);
       }
     } break;
     case NFA_DEACTIVATED_EVT:  // NFC link/protocol deactivated
+      // Tag discovery/loss notifications can be suppressed during RF interface reselection.
+      notifyRfConnectionChanged(sNotifyTagConnectionChanged, false);
       LOG(DEBUG) << StringPrintf(
           "%s: NFA_DEACTIVATED_EVT   Type=%u, gIsTagDeactivating=%d, "
           "gIsSelectingRfInterface=%d",
@@ -594,20 +600,7 @@ static void nfaConnectionCallback(uint8_t connEvent,
           (eventData->deactivated.type == NFA_DEACTIVATE_TYPE_DISCOVERY)) {
         if (sSeRfActive) {
           sSeRfActive = false;
-          struct nfc_jni_native_data* nat = getNative(NULL, NULL);
-          if (!nat) {
-            LOG(ERROR) << StringPrintf("%s: cached nat is null", __func__);
-            return;
-          }
-          JNIEnv* e = NULL;
-          ScopedAttach attach(nat->vm, &e);
-          if (e == NULL) {
-            LOG(ERROR) << __func__ << ": jni env is null";
-            return;
-          }
-          e->CallVoidMethod(nat->manager,
-                            android::gCachedNfcManagerNotifyEeListenActivated,
-                            JNI_FALSE);
+          notifyRfConnectionChanged(gCachedNfcManagerNotifyEeListenActivated, false);
         }
       }
 
@@ -845,6 +838,8 @@ static jboolean nfcManager_initNativeStruc(JNIEnv* e, jobject o) {
 
   gCachedNfcManagerNotifyTagDiscovered =
       e->GetMethodID(cls.get(), "notifyTagDiscovered", "(Z)V");
+  sNotifyTagConnectionChanged =
+      e->GetMethodID(cls.get(), "notifyTagConnectionChanged", "(Z)V");
 
   gCachedNfcManagerNotifyCommandTimeout =
       e->GetMethodID(cls.get(), "notifyCommandTimeout", "()V");

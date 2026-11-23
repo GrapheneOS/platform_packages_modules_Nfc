@@ -567,8 +567,16 @@ public class NfcService implements DeviceHostListener, ForegroundUtils.Callback 
     private ISecureElementService mSEService;
     private final AlarmManager mAlarmManager;
     private final AlarmManager.OnAlarmListener mAutoOffAlarm = this::onAutoOffAlarm;
-    @GuardedBy("this") private long mAutoOffDeadline;
-    @GuardedBy("this") private int mAutoOffTimeoutMillis;
+    @GuardedBy("this") private long mAutoOffDeadline; // 0 when no alarm is scheduled
+    private volatile int mAutoOffTimeoutMillis;
+    private static final int CONNECTION_TAG = 1;
+    private static final int CONNECTION_HOST_CARD = 1 << 1;
+    private static final int CONNECTION_SECURE_ELEMENT = 1 << 2;
+    private static final int ALL_CONNECTIONS =
+            CONNECTION_TAG | CONNECTION_HOST_CARD | CONNECTION_SECURE_ELEMENT;
+    @GuardedBy("mDiscoveryLock") private int mActiveConnections;
+    // Elapsed realtime of the last disconnect, or -1 while a connection is active.
+    private volatile long mIdleSince;
 
     private ScreenStateHelper mScreenStateHelper;
     private ForegroundUtils mForegroundUtils;
@@ -615,7 +623,7 @@ public class NfcService implements DeviceHostListener, ForegroundUtils.Callback 
         }
     };
 
-    private Object mDiscoveryLock = new Object();
+    private final Object mDiscoveryLock = new Object();
     private final Object mObjectMapLock = new Object();
     private final Object mRoutingWatchDogLock = new Object();
 
@@ -658,6 +666,7 @@ public class NfcService implements DeviceHostListener, ForegroundUtils.Callback 
      */
     @Override
     public void onHostCardEmulationActivated(int technology) {
+        updateConnection(CONNECTION_HOST_CARD, true);
         mCardEmulationActivated = true;
         try {
             if (mNfcOemExtensionCallback != null) {
@@ -700,6 +709,7 @@ public class NfcService implements DeviceHostListener, ForegroundUtils.Callback 
 
     @Override
     public void onHostCardEmulationDeactivated(int technology) {
+        updateConnection(CONNECTION_HOST_CARD, false);
         mCardEmulationActivated = false;
         try {
             if (mNfcOemExtensionCallback != null) {
@@ -961,6 +971,7 @@ public class NfcService implements DeviceHostListener, ForegroundUtils.Callback 
 
     @Override
     public void onEeListenActivated(boolean isActivated) {
+        updateConnection(CONNECTION_SECURE_ELEMENT, isActivated);
         mEeListenActivated = isActivated;
         mCardEmulationManager.onEeListenActivated(isActivated);
         try {
@@ -974,6 +985,7 @@ public class NfcService implements DeviceHostListener, ForegroundUtils.Callback 
 
     @Override
     public void onRfDiscoveryEvent(boolean isDiscoveryStarted) {
+        if (!isDiscoveryStarted) updateConnection(ALL_CONNECTIONS, false);
         synchronized (mDiscoveryLock) {
             mRfDiscoveryStarted = isDiscoveryStarted;
         }
@@ -1092,6 +1104,11 @@ public class NfcService implements DeviceHostListener, ForegroundUtils.Callback 
         });
     }
 
+    @Override
+    public void onTagConnectionChanged(boolean connected) {
+        updateConnection(CONNECTION_TAG, connected);
+    }
+
     final class ReaderModeParams {
         public int flags;
         public IAppCallback callback;
@@ -1107,10 +1124,30 @@ public class NfcService implements DeviceHostListener, ForegroundUtils.Callback 
         public int uid;
     }
 
+    private void updateConnection(int mask, boolean connected) {
+        // Native callbacks must not wait for the service lock while it is waiting on the stack.
+        synchronized (mDiscoveryLock) {
+            int state = mState.get();
+            if (connected && state != NfcAdapter.STATE_ON && state != NfcAdapter.STATE_TURNING_ON) {
+                return;
+            }
+            boolean wasIdle = mActiveConnections == 0;
+            if (connected) {
+                mActiveConnections |= mask;
+            } else {
+                mActiveConnections &= ~mask;
+            }
+            boolean idle = mActiveConnections == 0;
+            if (idle == wasIdle) return;
+            mIdleSince = idle ? mNfcInjector.getElapsedSinceBootMillis() : -1;
+        }
+        if (mAutoOffTimeoutMillis > 0) mHandler.post(this::updateAutoOffAlarm);
+    }
+
     void saveNfcOnSetting(boolean on) {
         synchronized (NfcService.this) {
             // An off/on request can overtake a queued timeout before the adapter changes state.
-            if (on && mAutoOffTimeoutMillis > 0 && !getNfcOnSetting()) {
+            if (on && mAutoOffTimeoutMillis > 0 && mIdleSince >= 0 && !getNfcOnSetting()) {
                 scheduleAutoOffAlarm();
             }
             mPrefsEditor.putBoolean(PREF_NFC_ON, on);
@@ -1125,21 +1162,34 @@ public class NfcService implements DeviceHostListener, ForegroundUtils.Callback 
             int setting = mNfcInjector.getAutoOffTimeoutMillis();
             if (setting > 0 && !isNfcUserChangeRestricted()) timeout = setting;
         }
-        if (timeout == mAutoOffTimeoutMillis) return;
-
+        boolean timeoutChanged = timeout != mAutoOffTimeoutMillis;
+        // Publish the timeout before sampling usage so a concurrent callback can post an update.
         mAutoOffTimeoutMillis = timeout;
-        if (timeout > 0) {
-            scheduleAutoOffAlarm();
-        } else {
-            mAlarmManager.cancel(mAutoOffAlarm);
+        long idleSince = mIdleSince;
+        long deadline = 0;
+        if (timeout > 0 && idleSince >= 0) {
+            // A whole tap can occur before the handler or an already queued alarm gets to run.
+            deadline = timeoutChanged
+                    ? mNfcInjector.getElapsedSinceBootMillis() + timeout
+                    : Math.max(mAutoOffDeadline, idleSince + timeout);
         }
+        if (deadline != mAutoOffDeadline) setAutoOffAlarm(deadline);
     }
 
     @GuardedBy("this")
     private void scheduleAutoOffAlarm() {
-        mAutoOffDeadline = mNfcInjector.getElapsedSinceBootMillis() + mAutoOffTimeoutMillis;
-        mAlarmManager.setExact(AlarmManager.ELAPSED_REALTIME_WAKEUP, mAutoOffDeadline,
-                "NfcAutoOff", mAutoOffAlarm, mHandler);
+        setAutoOffAlarm(mNfcInjector.getElapsedSinceBootMillis() + mAutoOffTimeoutMillis);
+    }
+
+    @GuardedBy("this")
+    private void setAutoOffAlarm(long deadline) {
+        mAutoOffDeadline = deadline;
+        if (deadline == 0) {
+            mAlarmManager.cancel(mAutoOffAlarm);
+        } else {
+            mAlarmManager.setExact(AlarmManager.ELAPSED_REALTIME_WAKEUP, deadline,
+                    "NfcAutoOff", mAutoOffAlarm, mHandler);
+        }
     }
 
     private void onAutoOffAlarm() {
@@ -1162,7 +1212,7 @@ public class NfcService implements DeviceHostListener, ForegroundUtils.Callback 
     private synchronized boolean isAutoOffDue() {
         // A toggle or setting change may overtake an already delivered alarm.
         updateAutoOffAlarm();
-        return mAutoOffTimeoutMillis > 0
+        return mAutoOffDeadline != 0
                 && mNfcInjector.getElapsedSinceBootMillis() >= mAutoOffDeadline;
     }
 
@@ -2358,6 +2408,7 @@ public class NfcService implements DeviceHostListener, ForegroundUtils.Callback 
                 return;
             }
             mState.set(newState);
+            if (newState == NfcAdapter.STATE_OFF) updateConnection(ALL_CONNECTIONS, false);
             synchronized (NfcService.this) {
                 updateAutoOffAlarm();
                 if (android.nfc.Flags.nfcEventListener() && mCardEmulationManager != null) {

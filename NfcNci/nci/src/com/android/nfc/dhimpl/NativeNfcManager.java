@@ -679,6 +679,9 @@ public class NativeNfcManager implements DeviceHost {
     private void notifyTagDiscovered(boolean discovered) {
         mListener.onTagRfDiscovered(discovered);
     }
+    private void notifyTagConnectionChanged(boolean connected) {
+        mListener.onTagConnectionChanged(connected);
+    }
     private void notifyVendorSpecificEvent(int event, int dataLen, byte[] pData) {
         if (pData.length < NCI_HEADER_MIN_LEN || dataLen != pData.length) {
             Log.e(TAG, "notifyVendorSpecificEvent: Invalid data");
